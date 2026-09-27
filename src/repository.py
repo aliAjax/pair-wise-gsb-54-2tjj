@@ -47,8 +47,25 @@ class Repository:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS depth_rounds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    round_no INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    measured_at TEXT NOT NULL,
+                    passed INTEGER NOT NULL,
+                    shallowest_distance_km REAL NOT NULL,
+                    shallowest_depth_m REAL NOT NULL,
+                    gap_m REAL NOT NULL,
+                    points TEXT NOT NULL,
+                    reasons TEXT NOT NULL,
+                    recorded_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(record_id, round_no)
+                );
                 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state);
                 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id, id);
+                CREATE INDEX IF NOT EXISTS idx_depth_record ON depth_rounds(record_id, round_no);
                 """
             )
 
@@ -92,7 +109,7 @@ class Repository:
                 rows = connection.execute("SELECT * FROM records ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [self._row(row) for row in rows]
 
-    def mutate(self, record_id: int, expected_version: int, state: str, payload: Dict[str, Any], actor_id: str, action: str, details: Dict[str, Any]) -> Dict[str, Any]:
+    def mutate(self, record_id: int, expected_version: int, state: str, payload: Dict[str, Any], actor_id: str, action: str, details: Dict[str, Any], depth_round: Dict[str, Any] = None) -> Dict[str, Any]:
         now = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -112,9 +129,40 @@ class Repository:
                 "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
                 (record_id, action, actor_id, version, json.dumps(details, ensure_ascii=False, sort_keys=True), now),
             )
+            if depth_round is not None:
+                connection.execute(
+                    "INSERT INTO depth_rounds(record_id,round_no,kind,measured_at,passed,shallowest_distance_km,shallowest_depth_m,gap_m,points,reasons,recorded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        record_id,
+                        int(depth_round["round_no"]),
+                        str(depth_round["kind"]),
+                        str(depth_round["measured_at"]),
+                        1 if depth_round["passed"] else 0,
+                        float(depth_round["shallowest_distance_km"]),
+                        float(depth_round["shallowest_depth_m"]),
+                        float(depth_round["gap_m"]),
+                        json.dumps(depth_round["points"], ensure_ascii=False, sort_keys=True),
+                        json.dumps(depth_round["reasons"], ensure_ascii=False),
+                        actor_id,
+                        now,
+                    ),
+                )
             result = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
             connection.commit()
         return self._row(result)
+
+    def depth_history(self, record_id: int) -> List[Dict[str, Any]]:
+        self.get(record_id)
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM depth_rounds WHERE record_id=? ORDER BY round_no", (record_id,)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["passed"] = bool(item["passed"])
+            item["points"] = json.loads(item["points"])
+            item["reasons"] = json.loads(item["reasons"])
+            result.append(item)
+        return result
 
     def add_audit(self, record_id: int, actor_id: str, action: str, details: Dict[str, Any]) -> None:
         with self._connect() as connection:
