@@ -47,8 +47,19 @@ class Repository:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS burial_points (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    round INTEGER NOT NULL,
+                    distance_km REAL NOT NULL,
+                    burial_depth_m REAL NOT NULL,
+                    vessel_name TEXT NOT NULL DEFAULT '',
+                    measured_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state);
                 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id, id);
+                CREATE INDEX IF NOT EXISTS idx_burial_record ON burial_points(record_id, round, distance_km);
                 """
             )
 
@@ -92,7 +103,7 @@ class Repository:
                 rows = connection.execute("SELECT * FROM records ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [self._row(row) for row in rows]
 
-    def mutate(self, record_id: int, expected_version: int, state: str, payload: Dict[str, Any], actor_id: str, action: str, details: Dict[str, Any]) -> Dict[str, Any]:
+    def mutate(self, record_id: int, expected_version: int, state: str, payload: Dict[str, Any], actor_id: str, action: str, details: Dict[str, Any], burial_points: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         now = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -112,9 +123,32 @@ class Repository:
                 "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
                 (record_id, action, actor_id, version, json.dumps(details, ensure_ascii=False, sort_keys=True), now),
             )
+            if burial_points:
+                round_no = int(payload.get("burial_round_count", 0))
+                vessel_name = str(payload.get("vessel_name", ""))
+                measured_at = str(payload.get("burial_measured_at", now))
+                connection.executemany(
+                    "INSERT INTO burial_points(record_id,round,distance_km,burial_depth_m,vessel_name,measured_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                    [(record_id, round_no, float(point["distance_km"]), float(point["burial_depth_m"]), vessel_name, measured_at, now) for point in burial_points],
+                )
             result = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
             connection.commit()
         return self._row(result)
+
+    def burial_history(self, record_id: int, round_no: Optional[int] = None) -> List[Dict[str, Any]]:
+        self.get(record_id)
+        with self._connect() as connection:
+            if round_no is not None:
+                rows = connection.execute(
+                    "SELECT * FROM burial_points WHERE record_id=? AND round=? ORDER BY round, distance_km",
+                    (record_id, int(round_no)),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM burial_points WHERE record_id=? ORDER BY round, distance_km",
+                    (record_id,),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_audit(self, record_id: int, actor_id: str, action: str, details: Dict[str, Any]) -> None:
         with self._connect() as connection:

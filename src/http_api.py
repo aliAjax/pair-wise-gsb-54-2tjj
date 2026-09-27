@@ -12,6 +12,7 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+BURIAL_RE = re.compile(r"^/api/records/(\d+)/burial$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -83,6 +84,12 @@ def make_handler(service: Any, static_dir: Path):
                 match = AUDIT_RE.match(parsed.path)
                 if match:
                     self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
+                    return
+                match = BURIAL_RE.match(parsed.path)
+                if match:
+                    round_param = parse_qs(parsed.query).get("round", [None])[0]
+                    round_no = int(round_param) if round_param is not None else None
+                    self._send(200, {"items": service.burial_history(self._actor(), int(match.group(1)), round_no=round_no)})
                     return
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
